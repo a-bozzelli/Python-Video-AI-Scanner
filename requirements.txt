@@ -3,4 +3,5 @@ opencv-python>=4.5.0
 numpy>=1.22.0
 coremltools>=6.0
 Pillow>=9.0.0
-streamlit>=1.21.0 
+streamlit>=1.21.0
+ffmpeg-python>=0.2.0 

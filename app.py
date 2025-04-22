@@ -8,10 +8,38 @@ import time
 import platform
 from ultralytics import YOLO
 from PIL import Image
+import base64
 
 # Import utility modules
-from video_utils import analyze_video, create_summary_video
+from video_utils import analyze_video, create_summary_video, ensure_web_compatible_video
 from coreml_utils import convert_yolo_to_coreml, optimize_for_device
+
+# Helper function for video display
+def get_video_html(video_path):
+    """Create an HTML5 video player for the given video path"""
+    video_file = open(video_path, 'rb')
+    video_bytes = video_file.read()
+    video_file.close()
+    
+    # Get the mime type based on file extension
+    ext = os.path.splitext(video_path)[1].lower()
+    mime_type = {
+        '.mp4': 'video/mp4',
+        '.avi': 'video/x-msvideo',
+        '.mov': 'video/quicktime'
+    }.get(ext, 'video/mp4')
+    
+    # Encode the video bytes as base64
+    b64 = base64.b64encode(video_bytes).decode()
+    
+    # Create an HTML5 video player
+    video_html = f"""
+    <video width="100%" controls autoplay>
+        <source src="data:{mime_type};base64,{b64}" type="{mime_type}">
+        Your browser does not support the video tag.
+    </video>
+    """
+    return video_html
 
 # Set page configuration
 st.set_page_config(
@@ -114,7 +142,24 @@ with col1:
         tfile_path = tfile.name
         
         # Display the uploaded video
-        st.video(tfile_path)
+        video_display_col, download_col = st.columns([4, 1])
+        with video_display_col:
+            try:
+                st.video(tfile_path)
+            except Exception as e:
+                st.error(f"Video player error: {e}")
+                st.markdown(get_video_html(tfile_path), unsafe_allow_html=True)
+        
+        with download_col:
+            # Provide a download link in case the video doesn't play in browser
+            with open(tfile_path, 'rb') as f:
+                video_bytes = f.read()
+                st.download_button(
+                    label="Download video",
+                    data=video_bytes,
+                    file_name="uploaded_video.mp4",
+                    mime="video/mp4"
+                )
 
 with col2:
     if video_file is not None:
@@ -143,7 +188,9 @@ with col2:
                 # Set the save path for summary video
                 summary_path = None
                 if create_summary:
-                    summary_path = tfile_path.replace('.mp4', '_summary.mp4')
+                    # Create separate temp directory for summary video that won't be auto-deleted
+                    summary_dir = tempfile.mkdtemp()
+                    summary_path = os.path.join(summary_dir, "summary.mp4")
                 
                 # Use our utility function to analyze the video
                 detected_objects, _ = analyze_video(
@@ -156,13 +203,24 @@ with col2:
                 # Create summary video if enabled
                 if create_summary:
                     status_text.text("Creating summary video...")
-                    summary_path = create_summary_video(
-                        tfile_path,
-                        model,
-                        summary_path,
-                        frame_interval=frame_interval,
-                        conf_threshold=conf_threshold
-                    )
+                    try:
+                        summary_path = create_summary_video(
+                            tfile_path,
+                            model,
+                            summary_path,
+                            frame_interval=frame_interval,
+                            conf_threshold=conf_threshold
+                        )
+                        
+                        # Ensure the video is web-compatible
+                        status_text.text("Optimizing video for web playback...")
+                        summary_path = ensure_web_compatible_video(summary_path)
+                        
+                        st.success(f"Summary video created at: {summary_path}")
+                    except Exception as e:
+                        st.error(f"Error creating summary video: {e}")
+                        # Continue with analysis even if summary fails
+                        summary_path = None
                 
                 # End timing
                 end_time = time.time()
@@ -177,7 +235,56 @@ with col2:
                 # Show summary video if created
                 if summary_path and os.path.exists(summary_path):
                     st.subheader("Summary Video")
-                    st.video(summary_path)
+                    
+                    # Store path for cleanup later
+                    st.session_state.summary_video_path = summary_path
+                    
+                    # Create columns for video and download button
+                    video_col, download_col = st.columns([4, 1])
+                    
+                    with video_col:
+                        # First try standard Streamlit video component
+                        try:
+                            st.video(summary_path)
+                        except Exception as e:
+                            st.warning(f"Standard video player not working: {e}")
+                            # Fall back to HTML player
+                            st.markdown(get_video_html(summary_path), unsafe_allow_html=True)
+                            
+                    with download_col:
+                        # Provide download option
+                        with open(summary_path, 'rb') as f:
+                            video_bytes = f.read()
+                            st.download_button(
+                                label="Download summary",
+                                data=video_bytes,
+                                file_name="summary_video.mp4",
+                                mime="video/mp4"
+                            )
+                
+                elif summary_path:
+                    # Check if the file extension changed (e.g., from .mp4 to .avi)
+                    possible_extensions = ['.avi', '.mp4', '.mov']
+                    for ext in possible_extensions:
+                        alt_path = os.path.splitext(summary_path)[0] + ext
+                        if os.path.exists(alt_path):
+                            st.subheader("Summary Video")
+                            
+                            # Store path for cleanup later
+                            st.session_state.summary_video_path = alt_path
+                            
+                            # Try standard Streamlit video component
+                            try:
+                                st.video(alt_path)
+                            except Exception as e:
+                                st.warning(f"Standard video player not working: {e}")
+                                # Fall back to HTML player
+                                st.markdown(get_video_html(alt_path), unsafe_allow_html=True)
+                                
+                            summary_path = alt_path
+                            break
+                    else:
+                        st.warning("Summary video could not be created.")
                 
                 # Clear progress bar when done
                 progress_bar.empty()
@@ -198,7 +305,8 @@ with col2:
             except Exception as e:
                 st.error(f"Error processing video: {e}")
             finally:
-                # Clean up the temporary file
+                # Clean up the temporary file but only for the uploaded video
+                # Keep the summary video available
                 try:
                     os.unlink(tfile_path)
                 except:

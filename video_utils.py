@@ -179,41 +179,135 @@ def create_summary_video(video_path, model, output_path, frame_interval=24, conf
     """
     # Open the video
     cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise ValueError(f"Could not open video file: {video_path}")
     
     # Get video properties
     fps = cap.get(cv2.CAP_PROP_FPS)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     
+    # Ensure we have valid dimensions
+    if width == 0 or height == 0:
+        raise ValueError(f"Invalid video dimensions: {width}x{height}")
+    
+    # Determine output FPS (we want the summary video to play at normal speed)
+    output_fps = fps / frame_interval
+    if output_fps < 1:
+        output_fps = 1  # Ensure minimum 1 FPS
+    
+    # Choose an appropriate codec based on platform
+    import platform
+    if platform.system() == 'Windows':
+        try:
+            # Try H.264 first for better browser compatibility
+            fourcc = cv2.VideoWriter_fourcc(*'H264')
+            if not output_path.lower().endswith('.mp4'):
+                output_path = output_path.rsplit('.', 1)[0] + '.mp4'
+        except:
+            # Fallback to XVID which is more widely available on Windows
+            fourcc = cv2.VideoWriter_fourcc(*'XVID')
+            if not output_path.lower().endswith('.avi'):
+                output_path = output_path.rsplit('.', 1)[0] + '.avi'
+    else:
+        # For other platforms, try H.264
+        fourcc = cv2.VideoWriter_fourcc(*'avc1')
+        if not output_path.lower().endswith('.mp4'):
+            output_path = output_path.rsplit('.', 1)[0] + '.mp4'
+    
     # Create video writer
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(output_path, fourcc, fps/frame_interval, (width, height))
+    out = cv2.VideoWriter(output_path, fourcc, output_fps, (width, height))
+    if not out.isOpened():
+        # Fallback to MJPG which is widely available
+        fourcc = cv2.VideoWriter_fourcc(*'MJPG')
+        output_path = output_path.rsplit('.', 1)[0] + '.avi'
+        out = cv2.VideoWriter(output_path, fourcc, output_fps, (width, height))
+        if not out.isOpened():
+            raise ValueError(f"Could not create video writer for: {output_path}")
     
     # Process frames
     frame_idx = 0
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
-        
-        # Process every nth frame
-        if frame_idx % frame_interval == 0:
-            # Run inference
-            results = model(frame)
-            
-            # Plot results on frame
-            annotated_frame = results[0].plot()
-            
-            # Write to output video
-            out.write(annotated_frame)
-        
-        frame_idx += 1
+    processed_count = 0
     
-    # Release resources
-    cap.release()
-    out.release()
+    try:
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+            
+            # Process every nth frame
+            if frame_idx % frame_interval == 0:
+                # Run inference
+                results = model(frame, conf=conf_threshold)
+                
+                # Plot results on frame
+                annotated_frame = results[0].plot()
+                
+                # Write to output video
+                out.write(annotated_frame)
+                processed_count += 1
+            
+            frame_idx += 1
+    except Exception as e:
+        print(f"Error processing frame: {e}")
+    finally:
+        # Release resources
+        cap.release()
+        out.release()
+    
+    # Verify that we produced a valid video
+    if processed_count == 0:
+        raise ValueError("No frames were processed for the summary video")
     
     return output_path
+
+def ensure_web_compatible_video(video_path):
+    """
+    Ensure a video is web-compatible for Streamlit display
+    
+    Args:
+        video_path (str): Path to the video file
+        
+    Returns:
+        str: Path to the web-compatible video
+    """
+    # Check if ffmpeg is available
+    try:
+        import subprocess
+        result = subprocess.run(["ffmpeg", "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        has_ffmpeg = result.returncode == 0
+    except:
+        has_ffmpeg = False
+    
+    # If ffmpeg is not available, just return the original path
+    if not has_ffmpeg:
+        return video_path
+    
+    # Create a web-compatible version (H.264 MP4)
+    web_path = os.path.splitext(video_path)[0] + "_web.mp4"
+    
+    try:
+        cmd = [
+            "ffmpeg", 
+            "-i", video_path,
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-pix_fmt", "yuv420p",
+            "-crf", "23",
+            "-y",  # Overwrite if exists
+            web_path
+        ]
+        
+        subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        
+        # Check if the conversion was successful
+        if os.path.exists(web_path) and os.path.getsize(web_path) > 0:
+            return web_path
+        else:
+            return video_path
+    except Exception as e:
+        print(f"Error converting video: {e}")
+        return video_path
 
 if __name__ == "__main__":
     # Example usage
