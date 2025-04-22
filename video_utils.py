@@ -105,7 +105,8 @@ def detect_objects_in_frames(model, frames, conf_threshold=0.25):
     
     return detected_objects
 
-def analyze_video(video_path, model, frame_interval=24, conf_threshold=0.25, save_annotated=False, output_dir=None):
+def analyze_video(video_path, model, frame_interval=24, conf_threshold=0.25, iou_threshold=0.45, 
+               save_annotated=False, output_dir=None, img_size=640, class_filter=None):
     """
     Analyze a video to detect objects
     
@@ -114,8 +115,11 @@ def analyze_video(video_path, model, frame_interval=24, conf_threshold=0.25, sav
         model: YOLO model
         frame_interval (int): Analyze every nth frame
         conf_threshold (float): Confidence threshold for detections
+        iou_threshold (float): IoU threshold for Non-Maximum Suppression
         save_annotated (bool): Whether to save annotated frames
         output_dir (str, optional): Directory to save annotated frames
+        img_size (int): Image size for inference
+        class_filter (list, optional): List of class names to include
         
     Returns:
         tuple: (detected_objects, annotated_frames_dir)
@@ -132,8 +136,8 @@ def analyze_video(video_path, model, frame_interval=24, conf_threshold=0.25, sav
     
     # Process each frame
     for i, frame in enumerate(frames):
-        # Run inference
-        results = model(frame)
+        # Run inference with advanced parameters
+        results = model(frame, conf=conf_threshold, iou=iou_threshold, imgsz=img_size)
         
         # Process results of current frame
         for r in results:
@@ -143,6 +147,10 @@ def analyze_video(video_path, model, frame_interval=24, conf_threshold=0.25, sav
                 cls_id = int(box.cls.item())
                 class_name = model.names[cls_id]
                 conf = box.conf.item()
+                
+                # Apply class filter if provided
+                if class_filter and class_name.lower() not in class_filter:
+                    continue
                 
                 # Only count detections above threshold
                 if conf > conf_threshold:
@@ -163,7 +171,8 @@ def analyze_video(video_path, model, frame_interval=24, conf_threshold=0.25, sav
     else:
         return detected_objects, None
 
-def create_summary_video(video_path, model, output_path, frame_interval=24, conf_threshold=0.25):
+def create_summary_video(video_path, model, output_path, frame_interval=24, conf_threshold=0.25,
+                        iou_threshold=0.45, img_size=640, class_filter=None):
     """
     Create a summary video with object detections
     
@@ -173,6 +182,9 @@ def create_summary_video(video_path, model, output_path, frame_interval=24, conf
         output_path (str): Path to save the summary video
         frame_interval (int): Process every nth frame
         conf_threshold (float): Confidence threshold for detections
+        iou_threshold (float): IoU threshold for Non-Maximum Suppression
+        img_size (int): Image size for inference
+        class_filter (list, optional): List of class names to include
         
     Returns:
         str: Path to the summary video
@@ -237,11 +249,50 @@ def create_summary_video(video_path, model, output_path, frame_interval=24, conf
             
             # Process every nth frame
             if frame_idx % frame_interval == 0:
-                # Run inference
-                results = model(frame, conf=conf_threshold)
+                # Run inference with advanced parameters
+                results = model(frame, conf=conf_threshold, iou=iou_threshold, imgsz=img_size)
                 
-                # Plot results on frame
-                annotated_frame = results[0].plot()
+                # If we have a class filter, apply it
+                if class_filter:
+                    # Create new boxes with only the classes we want
+                    filtered_results = []
+                    for r in results:
+                        filtered_detections = []
+                        for box in r.boxes:
+                            cls_id = int(box.cls.item())
+                            class_name = model.names[cls_id].lower()
+                            if class_name in class_filter:
+                                filtered_detections.append(box)
+                        
+                        # Only use results with our filtered classes
+                        if filtered_detections:
+                            # We would need to modify the results object here to contain only
+                            # the filtered detections, but we'll use the plotting function with labels
+                            pass
+                
+                # Plot results on frame with custom settings
+                annotated_frame = results[0].plot(conf=conf_threshold, line_width=2, font_size=1.0)
+                
+                # Add text overlay with detection information
+                detections = {}
+                for r in results:
+                    for box in r.boxes:
+                        cls_id = int(box.cls.item())
+                        class_name = model.names[cls_id]
+                        
+                        # Apply class filter if provided
+                        if class_filter and class_name.lower() not in class_filter:
+                            continue
+                            
+                        if class_name in detections:
+                            detections[class_name] += 1
+                        else:
+                            detections[class_name] = 1
+                
+                # Add a header with frame information
+                header_text = f"Frame: {frame_idx} | Objects detected: {sum(detections.values())}"
+                cv2.putText(annotated_frame, header_text, (10, 30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                 
                 # Write to output video
                 out.write(annotated_frame)

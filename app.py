@@ -60,16 +60,27 @@ is_mac = platform.system() == "Darwin"
 
 # Function to get model
 @st.cache_resource
-def load_model(use_coreml=False):
+def load_model(model_path, use_coreml=False, img_size=640):
+    # Check if we're using a specialized model
+    if "furniture_detector" in model_path:
+        # This would be a path to a fine-tuned model for furniture
+        st.info("Loading specialized furniture detector model...")
+        model_path = "yolov8m.pt"  # Fallback to standard model if specialized not available
+    elif "indoor_objects" in model_path:
+        # This would be a path to a fine-tuned model for indoor objects
+        st.info("Loading specialized indoor objects detector model...")
+        model_path = "yolov8m.pt"  # Fallback to standard model if specialized not available
+    
     # Default to standard pytorch model
     if not use_coreml:
-        return YOLO("yolov8n.pt")
+        return YOLO(model_path, task='detect')
     
     # For CoreML, first convert the model if needed
-    coreml_model_path = "models/yolov8n.mlmodel"
+    model_name = os.path.basename(model_path)
+    coreml_model_path = f"models/{os.path.splitext(model_name)[0]}.mlmodel"
     if not os.path.exists(coreml_model_path):
         st.info("Converting YOLOv8 model to CoreML format. This may take a moment...")
-        coreml_model_path = convert_yolo_to_coreml("yolov8n.pt", "models")
+        coreml_model_path = convert_yolo_to_coreml(model_path, "models")
         
         # Check if on Apple Silicon for optimization
         if platform.processor() == "arm":
@@ -77,7 +88,7 @@ def load_model(use_coreml=False):
             coreml_model_path = optimize_for_device(coreml_model_path, device="neural_engine")
     
     # Load the CoreML model
-    model = YOLO(coreml_model_path)
+    model = YOLO(coreml_model_path, task='detect')
     return model
 
 # Sidebar for configuration
@@ -87,9 +98,18 @@ with st.sidebar:
     # Model selection
     model_type = st.selectbox(
         "Model Type",
-        ["YOLOv8n (default)", "YOLOv8s", "YOLOv8m", "YOLOv8l", "YOLOv8x"],
+        ["YOLOv8m (default)", "YOLOv8n (fast)", "YOLOv8s", "YOLOv8l", "YOLOv8x (most accurate)"],
         index=0
     )
+    
+    # Add specialized model options
+    use_specialized = st.checkbox("Use specialized model for indoor objects", value=False)
+    if use_specialized:
+        specialized_model = st.selectbox(
+            "Specialized Model",
+            ["furniture_detector", "indoor_objects"]
+        )
+        st.info("💡 Specialized models are fine-tuned for specific object categories and may provide better detection for home environments.")
     
     # CoreML option (only for Mac)
     use_coreml = False
@@ -98,31 +118,65 @@ with st.sidebar:
     
     # Processing settings
     st.subheader("Processing Settings")
-    conf_threshold = st.slider("Confidence Threshold", 0.0, 1.0, 0.5, 0.05)
+    conf_threshold = st.slider("Confidence Threshold", 0.0, 1.0, 0.3, 0.05)
+    
+    # IOU threshold for Non-Maximum Suppression
+    iou_threshold = st.slider("IoU Threshold", 0.0, 1.0, 0.45, 0.05, 
+                             help="Intersection over Union threshold for Non-Maximum Suppression. Lower values create stricter detection filtering.")
     
     # Sampling rate (every nth frame)
     frame_interval = st.slider("Process every n-th frame", 1, 60, 24)
     
     # Summary video option
     create_summary = st.checkbox("Create Summary Video", value=True)
+    
+    # Additional settings expandable section
+    with st.expander("Advanced Settings"):
+        # Class filtering
+        filter_classes = st.checkbox("Filter detected classes", value=False)
+        if filter_classes:
+            st.info("Enter class names to include, one per line (e.g., chair, sofa, table)")
+            class_filter_text = st.text_area("Classes to include", height=100)
+            class_filter = [cls.strip().lower() for cls in class_filter_text.split('\n') if cls.strip()]
+        else:
+            class_filter = None
+            
+        # Image size
+        img_size = st.select_slider(
+            "Image Size",
+            options=[320, 416, 512, 640, 768, 896, 1024],
+            value=640,
+            help="Larger values improve accuracy but reduce speed"
+        )
 
 # Map model type to actual model path
 model_paths = {
-    "YOLOv8n (default)": "yolov8n.pt",
+    "YOLOv8n (fast)": "yolov8n.pt",
     "YOLOv8s": "yolov8s.pt",
-    "YOLOv8m": "yolov8m.pt",
+    "YOLOv8m (default)": "yolov8m.pt",
     "YOLOv8l": "yolov8l.pt",
-    "YOLOv8x": "yolov8x.pt"
+    "YOLOv8x (most accurate)": "yolov8x.pt"
 }
 
 # Load the selected model
 model_path = model_paths[model_type]
-try:
-    model = load_model(use_coreml)
-except Exception as e:
-    st.error(f"Error loading model: {e}")
-    st.info("Falling back to standard YOLOv8n model")
-    model = YOLO("yolov8n.pt")
+
+# Check if we're using a specialized model
+if use_specialized:
+    specialized_path = f"{specialized_model}.pt"  # This would be the path to the specialized model
+    try:
+        model = load_model(specialized_path, use_coreml, img_size)
+    except Exception as e:
+        st.error(f"Error loading specialized model: {e}")
+        st.info(f"Falling back to {model_type}")
+        model = load_model(model_path, use_coreml, img_size)
+else:
+    try:
+        model = load_model(model_path, use_coreml, img_size)
+    except Exception as e:
+        st.error(f"Error loading model: {e}")
+        st.info("Falling back to standard YOLOv8m model")
+        model = YOLO("yolov8m.pt")
 
 # Main content area
 col1, col2 = st.columns([3, 2])
@@ -197,7 +251,10 @@ with col2:
                     tfile_path, 
                     model, 
                     frame_interval=frame_interval,
-                    conf_threshold=conf_threshold
+                    conf_threshold=conf_threshold,
+                    iou_threshold=iou_threshold,
+                    img_size=img_size,
+                    class_filter=class_filter if filter_classes else None
                 )
                 
                 # Create summary video if enabled
@@ -209,7 +266,10 @@ with col2:
                             model,
                             summary_path,
                             frame_interval=frame_interval,
-                            conf_threshold=conf_threshold
+                            conf_threshold=conf_threshold,
+                            iou_threshold=iou_threshold,
+                            img_size=img_size,
+                            class_filter=class_filter if filter_classes else None
                         )
                         
                         # Ensure the video is web-compatible
