@@ -360,6 +360,71 @@ def ensure_web_compatible_video(video_path):
         print(f"Error converting video: {e}")
         return video_path
 
+def extract_key_frames_for_ai(video_path, output_dir, frame_interval=24, max_frames=10):
+    """
+    Extract key frames from a video for AI analysis and save them to disk
+    
+    Args:
+        video_path (str): Path to the video file
+        output_dir (str): Directory to save extracted frames
+        frame_interval (int): Extract every nth frame
+        max_frames (int): Maximum number of frames to extract
+        
+    Returns:
+        list: Paths to extracted frames
+    """
+    # Create output directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Open the video
+    cap = cv2.VideoCapture(video_path)
+    
+    # Get video properties
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    duration = frame_count / fps
+    
+    # Calculate frame interval to get a good representation within max_frames
+    if frame_count > max_frames * frame_interval:
+        # Adjust interval to extract approximately max_frames
+        frame_interval = max(1, int(frame_count / max_frames))
+    
+    # Initialize list to store frame paths
+    frame_paths = []
+    
+    # Read and extract frames
+    frame_idx = 0
+    extracted_count = 0
+    
+    while cap.isOpened() and extracted_count < max_frames:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        
+        # Process every nth frame
+        if frame_idx % frame_interval == 0:
+            # Save the frame to the output directory
+            frame_path = os.path.join(output_dir, f"ai_frame_{frame_idx:06d}.jpg")
+            cv2.imwrite(frame_path, frame)
+            frame_paths.append(frame_path)
+            extracted_count += 1
+        
+        frame_idx += 1
+    
+    # Add the last frame if it wasn't included and we haven't reached max_frames
+    if extracted_count < max_frames and frame_idx > 0 and (frame_idx - 1) % frame_interval != 0:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_count - 1)
+        ret, frame = cap.read()
+        if ret:
+            frame_path = os.path.join(output_dir, f"ai_frame_last.jpg")
+            cv2.imwrite(frame_path, frame)
+            frame_paths.append(frame_path)
+    
+    # Release the video capture
+    cap.release()
+    
+    return frame_paths
+
 if __name__ == "__main__":
     # Example usage
     model = YOLO("yolov8n.pt")
