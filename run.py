@@ -24,11 +24,11 @@ def install_requirements():
     print("Requirements installed successfully!")
 
 def download_default_model():
-    """Download the default YOLOv8n model"""
-    print("Downloading the default YOLOv8n model...")
+    """Download the default YOLOv8m model"""
+    print("Downloading the default YOLOv8m model...")
     try:
-        subprocess.check_call([sys.executable, "download_models.py"])
-        print("Default model downloaded successfully!")
+        subprocess.check_call([sys.executable, "download_models.py", "--models", "m", "--specialized"])
+        print("Default models downloaded successfully!")
     except subprocess.CalledProcessError as e:
         print(f"Error downloading model: {e}")
         sys.exit(1)
@@ -50,8 +50,19 @@ if __name__ == "__main__":
     os.makedirs("models", exist_ok=True)
     
     # Download the default model if not already present
-    if not os.path.exists("yolov8n.pt"):
+    if not os.path.exists("yolov8m.pt"):
         download_default_model()
+    else:
+        print("Default YOLOv8m model already exists.")
+        
+        # Ask about specialized models
+        download_specialized = input("Do you want to download specialized models for better indoor detection? (y/n): ").lower()
+        if download_specialized.startswith('y'):
+            try:
+                subprocess.check_call([sys.executable, "download_models.py", "--specialized"])
+                print("Specialized models downloaded successfully!")
+            except subprocess.CalledProcessError as e:
+                print(f"Error downloading specialized models: {e}")
     
     # Run the application
     run_app() 
